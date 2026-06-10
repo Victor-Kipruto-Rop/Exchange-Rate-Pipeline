@@ -1,0 +1,12 @@
+exchange_rates:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: localhost
+      port: 5432
+      user: admin
+      password: password
+      dbname: rates_db
+      schema: analytics
+      threads: 4

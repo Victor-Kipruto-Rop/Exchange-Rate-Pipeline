@@ -1,0 +1,147 @@
+version: "3.8"
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment:
+    # Airflow core
+    AIRFLOW__CORE__EXECUTOR: ${AIRFLOW__CORE__EXECUTOR:-LocalExecutor}
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-admin}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-airflow}
+    AIRFLOW__CORE__FERNET_KEY: "${AIRFLOW__CORE__FERNET_KEY:-81HqDtbqAywKSOumSha3BhWNOdQ26slT6K0YaZeZyPs=}"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    # Logging
+    AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/logs
+    # Webserver
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    AIRFLOW__WEBSERVER__WEB_SERVER_PORT: "8080"
+    # Task defaults
+    AIRFLOW__TASKS__DEFAULT_TASK_EXECUTION_TIMEOUT: 600
+    # Scheduling
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 30
+    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 10
+    # Callbacks
+    AIRFLOW__WEBSERVER__DAG_DEFAULT_VIEW: grid
+    # Custom env vars
+    POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+    POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+    POSTGRES_DB: ${POSTGRES_DB:-rates_db}
+    POSTGRES_USER: ${POSTGRES_USER:-admin}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+    EXCHANGE_API_BASE_URL: "${EXCHANGE_API_BASE_URL:-https://open.er-api.com/v6/latest/USD}"
+    EXCHANGE_API_TIMEOUT: "${EXCHANGE_API_TIMEOUT:-30}"
+    EXCHANGE_API_MAX_RETRIES: "${EXCHANGE_API_MAX_RETRIES:-3}"
+    KES_CHANGE_THRESHOLD: "${KES_CHANGE_THRESHOLD:-0.01}"
+    MIN_CURRENCY_COUNT: "${MIN_CURRENCY_COUNT:-20}"
+    SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+    SLACK_CHANNEL: "${SLACK_CHANNEL:-#data-alerts}"
+    SLACK_USERNAME: "${SLACK_USERNAME:-airflow-pipeline}"
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./tasks:/opt/airflow/tasks
+    - ./plugins:/opt/airflow/plugins
+    - ./dbt_project:/opt/airflow/dbt_project
+    - ./tests:/opt/airflow/tests
+    - ./logs:/opt/airflow/logs
+    - airflow_home:/home/airflow
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+  networks:
+    - airflow-net
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — primary data store
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15
+    container_name: erp-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rates_db}
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sh:/docker-entrypoint-initdb.d/init_db.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d ${POSTGRES_DB:-rates_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - airflow-net
+
+  # ---------------------------------------------------------------------------
+  # Airflow Init — database migration & admin user creation
+  # ---------------------------------------------------------------------------
+  airflow-init:
+    <<: *airflow-common
+    container_name: erp-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com || true
+        echo "Airflow init complete."
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Airflow Scheduler — parses DAGs and triggers task instances
+  # ---------------------------------------------------------------------------
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: erp-airflow-scheduler
+    command: airflow scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $(hostname)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Airflow Webserver — UI and REST API
+  # ---------------------------------------------------------------------------
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: erp-airflow-webserver
+    command: airflow webserver --port 8080
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  postgres_data:
+  airflow_home:
+
+networks:
+  airflow-net:
+    driver: bridge

@@ -1,0 +1,10 @@
+name: exchange_rates
+version: "1.0.0"
+profile: exchange_rates
+model-paths: ["models"]
+models:
+  exchange_rates:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
