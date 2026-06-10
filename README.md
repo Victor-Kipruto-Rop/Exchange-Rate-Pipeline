@@ -168,3 +168,20 @@ make quality
 ## License
 
 MIT
+## Tech Stack
+
+| Technology | Purpose |
+|------------|---------|
+| Apache Airflow | Pipeline Orchestration |
+| PostgreSQL | Metadata & Task Storage |
+| dbt | Data Transformation |
+| Docker | Containerization |
+
+## Tech Stack
+
+| Technology | Purpose |
+|------------|---------|
+| Apache Airflow | Pipeline Orchestration |
+| PostgreSQL | Metadata & Task Storage |
+| dbt | Data Transformation |
+| Docker | Containerization |
